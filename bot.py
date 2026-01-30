@@ -222,18 +222,16 @@ def _final_system(mode: str) -> str:
 """
 
 def _tool_spec() -> list:
-    # file_search can be tuned: max_num_results and ranking_options are supported by tool config. :contentReference[oaicite:1]{index=1}
+    # В Responses API настройки задаются на верхнем уровне tool-объекта.
+    # Самый совместимый параметр — max_num_results.
     return [{
         "type": "file_search",
         "vector_store_ids": [VECTOR_STORE_ID],
-        "file_search": {
-            "max_num_results": FILE_SEARCH_MAX_RESULTS,
-            "ranking_options": {
-                "score_threshold": FILE_SEARCH_SCORE_THRESHOLD,
-                "ranker": "auto"
-            }
-        }
+        "max_num_results": FILE_SEARCH_MAX_RESULTS,
+        # ranking_options иногда не принимается в Responses API/SDK → оставляем выключенным.
+        # "ranking_options": {"ranker": "auto", "score_threshold": FILE_SEARCH_SCORE_THRESHOLD},
     }]
+
 
 def _safe_json_load(s: str) -> Optional[Dict[str, Any]]:
     try:
