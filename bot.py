@@ -282,25 +282,89 @@ CATALOG_EXTRACT_SYSTEM = """
 """
 
 def get_catalog_from_vector_store() -> Dict[str, Any]:
+    """
+    Returns: {"items": [ {model,type,maxSPL_1m,P_poe,poe_standard,price}, ... ]}
+    Guaranteed JSON via Structured Outputs (json_schema).
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string"},
+                        "type": {"type": "string"},
+                        "maxSPL_1m": {"type": "number"},
+                        "P_poe": {"type": ["number", "null"]},
+                        "poe_standard": {"type": "string"},
+                        "price": {"type": ["number", "null"]},
+                    },
+                    "required": ["model", "type", "maxSPL_1m", "P_poe", "poe_standard", "price"],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False
+    }
+
     resp = client.responses.create(
         model=MODEL_EXTRACT,
         input=[
             {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
-            {"role": "user", "content": "Собери список моделей и их параметры для расчёта (catalog)."},
+            {"role": "user", "content": "Собери каталог моделей и параметры для расчёта."},
         ],
         tools=[{
             "type": "file_search",
             "vector_store_ids": [VECTOR_STORE_ID],
             "max_num_results": 50
         }],
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "speaker_catalog",
+                "strict": True,
+                "schema": schema
+            }
+        }
     )
 
+    # output_text теперь будет валидным JSON-объектом
     text = (getattr(resp, "output_text", "") or "").strip()
-    logger.info("CATALOG_RAW_OUTPUT=%s", text[:2000])  # <-- добавь это
     data = _safe_json_load(text)
-    if not data or "items" not in data:
+    if not data:
         return {"items": []}
-    return data
+
+    # Нормализация типов + фильтр по обязательным полям
+    items = data.get("items", []) or []
+    norm_items = []
+    for it in items:
+        try:
+            model = (it.get("model") or "").strip()
+            stype = (it.get("type") or "").strip().lower()
+            maxspl = it.get("maxSPL_1m", None)
+            poe = it.get("P_poe", None)
+            poe_std = (it.get("poe_standard") or "unknown").strip()
+            price = it.get("price", None)
+
+            if not model or not stype or maxspl is None:
+                continue
+
+            norm_items.append({
+                "model": model,
+                "type": stype,
+                "maxSPL_1m": float(maxspl),
+                "P_poe": float(poe) if poe is not None else None,
+                "poe_standard": poe_std,
+                "price": float(price) if price is not None else None
+            })
+        except Exception:
+            continue
+
+    return {"items": norm_items}
+
     
 async def handle_calculator_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
