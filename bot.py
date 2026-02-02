@@ -14,7 +14,7 @@
 # Optional quality/behavior knobs:
 #   FILE_SEARCH_MAX_RESULTS=30          # 1..50
 #   FILE_SEARCH_SCORE_THRESHOLD=0.15    # 0..1
-#   MODEL_EXTRACT=gpt-4.1-mini
+#   MODEL_EXTRACT=gpt-4o-mini
 #   MODEL_FINAL=gpt-4.1-mini
 #
 # Optional admin notifications when bot can't find answer:
@@ -286,6 +286,7 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
     Returns: {"items": [ {model,type,maxSPL_1m,P_poe,poe_standard,price}, ... ]}
     Guaranteed JSON via Structured Outputs (json_schema).
     """
+
     schema = {
         "type": "object",
         "properties": {
@@ -310,32 +311,42 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
         "additionalProperties": False
     }
 
-    resp = client.responses.create(
-        model=MODEL_EXTRACT,
-        input=[
-            {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
-            {"role": "user", "content": "Собери каталог моделей и параметры для расчёта."},
-        ],
-        tools=[{
-            "type": "file_search",
-            "vector_store_ids": [VECTOR_STORE_ID],
-            "max_num_results": 50
-        }],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "speaker_catalog",
-                "strict": True,
-                "schema": schema
+    try:
+        resp = client.responses.create(
+            model=MODEL_EXTRACT,
+            input=[
+                {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
+                {"role": "user", "content": "Собери каталог моделей и параметры для расчёта."},
+            ],
+            tools=[{
+                "type": "file_search",
+                "vector_store_ids": [VECTOR_STORE_ID],
+                "max_num_results": 50
+            }],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "speaker_catalog",
+                    "strict": True,
+                    "schema": schema
+                }
             }
-        }
-    )
+        )
+    except Exception:
+        logger.exception("Catalog extraction failed")
+        return {"items": []}
 
-    # output_text теперь будет валидным JSON-объектом
-    text = (getattr(resp, "output_text", "") or "").strip()
-    data = _safe_json_load(text)
+    text_out = (getattr(resp, "output_text", "") or "").strip()
+    if not text_out:
+        return {"items": []}
+
+    data = _safe_json_load(text_out)
     if not data:
         return {"items": []}
+
+    items = data.get("items", []) or []
+    return {"items": items}
+
 
     # Нормализация типов + фильтр по обязательным полям
     items = data.get("items", []) or []
