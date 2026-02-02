@@ -118,6 +118,14 @@ def _ensure_config() -> Optional[str]:
 # ---------------------------
 # Modes (manager-friendly)
 # ---------------------------
+
+MODE_DESCRIPTIONS = {
+    "presale": "пресейл-ответ: архитектура/ограничения/что уточнить",
+    "client": "ответ для клиента (без лишней кухни)",
+    "diag": "диагностика: ошибки/проверки/шаги",
+    "short": "коротко, 3-7 строк",
+}
+
 DEFAULT_MODE = "presale"  # best for managers
 
 def _in_calculator(context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -245,6 +253,9 @@ def calc_for_model(S: float, L_target: float, room_type: str, maxSPL_1m: float) 
 
 CATALOG_EXTRACT_SYSTEM = """
 Ты извлекаешь каталог IP-громкоговорителей из внутренних документов.
+- Если найден файл catalog_speakers (pdf/docx), используй его как ОСНОВНОЙ источник каталога.
+- Паспортами дополняй только если в catalog_speakers нет строки по модели.
+
 
 Нужно вернуть СТРОГО JSON без текста вокруг:
 {
@@ -413,14 +424,9 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text(out)
 
 
-get_catalog_from_vector_store()
 
-MODE_DESCRIPTIONS = {
-    "presale": "пресейл-ответ: архитектура/ограничения/что уточнить",
-    "client": "ответ для клиента (без лишней кухни)",
-    "diag": "диагностика: ошибки/проверки/шаги",
-    "short": "коротко, 3-7 строк",
-}
+
+
 
 def _get_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
     mode = context.user_data.get("mode", DEFAULT_MODE)
@@ -604,6 +610,39 @@ async def notify_admin_if_not_found(context: ContextTypes.DEFAULT_TYPE, question
 # ---------------------------
 # Telegram handlers
 # ---------------------------
+
+async def calculator_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_allowed(update):
+        await update.message.reply_text("Доступ запрещён.")
+        return
+    _set_calculator(context, True)
+    await update.message.reply_text(
+        "🧮 Calculator включён.\n"
+        "Пришли параметры одним сообщением, например:\n"
+        "S=240\nH=3.2\nтип=офис\nшум=55\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=потолок\nэтаж=1\n\n"
+        "Если шум не укажешь — я подставлю автоматически.\n"
+        "Команды: /calc_help, /calc_stop"
+    )
+
+async def calc_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_allowed(update):
+        await update.message.reply_text("Доступ запрещён.")
+        return
+    await update.message.reply_text(
+        "🧮 Формат ввода:\n"
+        "S=площадь_м2\nH=высота_м\nтип=офис|коридор|склад|цех|улица\nшум=дБ (опционально)\n"
+        "контент=только речь|музыка\nпрепятствия=открытое пространство|перегородки|стеллажи|оборудование\n"
+        "монтаж=потолок|стена|колонна|любой\nэтаж=1\n\n"
+        "Пример:\nS=500\nH=6\nтип=склад\nконтент=только речь\nпрепятствия=стеллажи\nмонтаж=стена\nэтаж=1"
+    )
+
+async def calc_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_allowed(update):
+        await update.message.reply_text("Доступ запрещён.")
+        return
+    _set_calculator(context, False)
+    await update.message.reply_text("Calculator выключён. Можешь задавать обычные вопросы.")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
@@ -645,10 +684,11 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Ок. Режим: {new_mode} — {MODE_DESCRIPTIONS[new_mode]}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # If Calculator mode enabled, route to calculator logic
+    # If Calculator mode enabled, route to calculator logic
     if _in_calculator(context):
         await handle_calculator_message(update, context)
         return
+
 
     if not update.message or not update.message.text:
         return
