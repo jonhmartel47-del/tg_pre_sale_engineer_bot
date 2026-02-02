@@ -13,27 +13,39 @@
 #
 # Optional quality/behavior knobs:
 #   FILE_SEARCH_MAX_RESULTS=30          # 1..50
-#   FILE_SEARCH_SCORE_THRESHOLD=0.15    # 0..1
-#   MODEL_EXTRACT=gpt-4o-mini
+#   MODEL_EXTRACT=gpt-4o-mini          # recommended for structured outputs
 #   MODEL_FINAL=gpt-4.1-mini
 #
 # Optional admin notifications when bot can't find answer:
 #   ADMIN_CHAT_ID=-1001234567890        # where to forward "not found" questions
 
 import os
+import sys
 import json
 import logging
 import math
 import re
-from typing import Set, Optional, Dict, Any
+from typing import Set, Optional, Dict, Any, List, Tuple
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from openai import OpenAI
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+# ---------------------------
+# Logging (force stderr so Railway shows it reliably)
+# ---------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 logger = logging.getLogger("tg-pre-sale-engineer-bot")
 
+
+# ---------------------------
+# Environment
+# ---------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 VECTOR_STORE_ID = os.getenv("OPENAI_VECTOR_STORE_ID", "").strip()
@@ -41,11 +53,25 @@ VECTOR_STORE_ID = os.getenv("OPENAI_VECTOR_STORE_ID", "").strip()
 ALLOWED_USER_IDS_RAW = os.getenv("ALLOWED_USER_IDS", "").strip()
 ALLOWED_CHAT_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "").strip()
 
-MODEL_EXTRACT = os.getenv("MODEL_EXTRACT", "gpt-4.1-mini").strip()
+MODEL_EXTRACT = os.getenv("MODEL_EXTRACT", "gpt-4o-mini").strip()
 MODEL_FINAL = os.getenv("MODEL_FINAL", "gpt-4.1-mini").strip()
 
 ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID", "").strip()
 
+FILE_SEARCH_MAX_RESULTS = 30
+try:
+    FILE_SEARCH_MAX_RESULTS = int(os.getenv("FILE_SEARCH_MAX_RESULTS", "30").strip() or "30")
+except ValueError:
+    FILE_SEARCH_MAX_RESULTS = 30
+FILE_SEARCH_MAX_RESULTS = max(1, min(50, FILE_SEARCH_MAX_RESULTS))
+
+# OpenAI client
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# ---------------------------
+# Helpers
+# ---------------------------
 def _parse_int_set(csv: str) -> Set[int]:
     out: Set[int] = set()
     if not csv:
@@ -60,6 +86,7 @@ def _parse_int_set(csv: str) -> Set[int]:
             pass
     return out
 
+
 ALLOWED_USER_IDS: Set[int] = _parse_int_set(ALLOWED_USER_IDS_RAW)
 ALLOWED_CHAT_IDS: Set[int] = _parse_int_set(ALLOWED_CHAT_IDS_RAW)
 
@@ -70,54 +97,52 @@ if ADMIN_CHAT_ID_RAW:
     except ValueError:
         ADMIN_CHAT_ID = None
 
-def _get_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-def _get_float_env(name: str, default: float) -> float:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-FILE_SEARCH_MAX_RESULTS = max(1, min(50, _get_int_env("FILE_SEARCH_MAX_RESULTS", 30)))
-FILE_SEARCH_SCORE_THRESHOLD = max(0.0, min(1.0, _get_float_env("FILE_SEARCH_SCORE_THRESHOLD", 0.15)))
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-def _is_allowed(update: Update) -> bool:
-    # If no whitelist configured -> allow all (pilot)
-    if not (ALLOWED_USER_IDS or ALLOWED_CHAT_IDS):
-        return True
-    chat_id = update.effective_chat.id if update.effective_chat else None
-    user_id = update.effective_user.id if update.effective_user else None
-    if chat_id is not None and chat_id in ALLOWED_CHAT_IDS:
-        return True
-    if user_id is not None and user_id in ALLOWED_USER_IDS:
-        return True
-    return False
 
 def _ensure_config() -> Optional[str]:
     if not TELEGRAM_BOT_TOKEN:
         return "Missing TELEGRAM_BOT_TOKEN"
     if not OPENAI_API_KEY:
         return "Missing OPENAI_API_KEY"
-        
     if not VECTOR_STORE_ID:
         return "Missing OPENAI_VECTOR_STORE_ID"
     return None
 
+
+def _is_allowed(update: Update) -> bool:
+    # If no whitelist configured -> allow all (pilot)
+    if not (ALLOWED_USER_IDS or ALLOWED_CHAT_IDS):
+        return True
+
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    user_id = update.effective_user.id if update.effective_user else None
+
+    if chat_id is not None and chat_id in ALLOWED_CHAT_IDS:
+        return True
+    if user_id is not None and user_id in ALLOWED_USER_IDS:
+        return True
+    return False
+
+
+def _safe_json_load(s: str) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(s)
+    except Exception:
+        return None
+
+
+def _tool_spec() -> list:
+    # Responses API: file_search tool with max_num_results at top-level.
+    return [{
+        "type": "file_search",
+        "vector_store_ids": [VECTOR_STORE_ID],
+        "max_num_results": FILE_SEARCH_MAX_RESULTS,
+    }]
+
+
 # ---------------------------
-# Modes (manager-friendly)
+# Modes (Q&A)
 # ---------------------------
+DEFAULT_MODE = "presale"
 
 MODE_DESCRIPTIONS = {
     "presale": "пресейл-ответ: архитектура/ограничения/что уточнить",
@@ -126,84 +151,106 @@ MODE_DESCRIPTIONS = {
     "short": "коротко, 3-7 строк",
 }
 
-DEFAULT_MODE = "presale"  # best for managers
 
+def _get_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
+    mode = context.user_data.get("mode", DEFAULT_MODE)
+    return mode if mode in MODE_DESCRIPTIONS else DEFAULT_MODE
+
+
+def _set_mode(context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
+    if mode in MODE_DESCRIPTIONS:
+        context.user_data["mode"] = mode
+
+
+# ---------------------------
+# Calculator state
+# ---------------------------
 def _in_calculator(context: ContextTypes.DEFAULT_TYPE) -> bool:
     return bool(context.user_data.get("calculator_active", False))
 
+
 def _set_calculator(context: ContextTypes.DEFAULT_TYPE, active: bool) -> None:
     context.user_data["calculator_active"] = active
-    
-def allowed_speaker_types(room_type: str) -> Set[str]:
-    rt = room_type.lower()
-    if "офис" in rt or "переговор" in rt:
-        return {"потолочный", "настенный"}
-    if "корид" in rt or "холл" in rt:
-        return {"потолочный", "настенный"}
-    if "склад" in rt:
-        return {"настенный", "колонный", "рупорный"}
-    if "цех" in rt:
-        return {"колонный", "рупорный"}
-    if "улиц" in rt:
-        return {"уличный", "рупорный", "проекторный"}
-    # fallback
-    return {"потолочный", "настенный", "колонный", "рупорный"}
 
+
+def _looks_like_calc_input(text: str) -> bool:
+    """
+    Auto-detect calculator input so it still works after Railway restarts
+    even if user didn't run /calc.
+    """
+    t = (text or "").strip()
+    return bool(re.search(r"(?im)^s\s*=", t) and re.search(r"(?im)^h\s*=", t) and re.search(r"(?im)^тип", t))
+
+
+# ---------------------------
+# Calculator: parsing & math (NO "этаж")
+# ---------------------------
 def parse_room_params(text: str) -> Dict[str, Any]:
     """
     Accepts multiline like:
-    S=240
-    H=3.2
-    тип=офис
-    шум=55
+    S=2400
+    H=3.5
+    тип=склад
+    шум=85                (optional; if missing/empty -> auto)
     контент=только речь
     препятствия=перегородки
-    монтаж=потолок
-    этаж=1
+    монтаж=стена           (optional; used only as preference, not hard filter)
+    (этаж=... is ignored if present)
     """
-    t = text.lower().strip()
+    t = text.strip()
 
     def grab_num(key: str) -> Optional[float]:
-        m = re.search(rf"{key}\s*=\s*([0-9]+(?:[.,][0-9]+)?)", t)
+        # allow "шум=" empty -> None
+        m_empty = re.search(rf"(?im)^{re.escape(key)}\s*=\s*$", t)
+        if m_empty:
+            return None
+
+        m = re.search(rf"(?im)^{re.escape(key)}\s*=\s*([0-9]+(?:[.,][0-9]+)?)\s*$", t)
         if not m:
             return None
         return float(m.group(1).replace(",", "."))
 
-    def grab_str(key: str) -> Optional[str]:
-        m = re.search(rf"{key}\s*=\s*([^\n\r]+)", t)
-        if not m:
-            return None
-        return m.group(1).strip()
+    def grab_str(*keys: str) -> Optional[str]:
+        for key in keys:
+            m = re.search(rf"(?im)^{re.escape(key)}\s*=\s*(.+?)\s*$", t)
+            if m:
+                val = m.group(1).strip()
+                if val:
+                    return val
+        return None
 
-    S = grab_num("s")
-    H = grab_num("h")
-    room_type = grab_str("тип") or grab_str("тип_помещения")
+    S = grab_num("S")
+    H = grab_num("H")
+    room_type = grab_str("тип", "тип_помещения")
     noise = grab_num("шум") or grab_num("уровень_шума")
     content = grab_str("контент")
     obstacles = grab_str("препятствия")
-    mount = grab_str("монтаж") or grab_str("разрешённый_монтаж")
-    floor = grab_str("этаж") or "1"
+    mount = grab_str("монтаж", "разрешённый_монтаж")  # optional
 
-    if not S or not H or not room_type or not content or not obstacles or not mount:
-        missing = []
-        if not S: missing.append("S")
-        if not H: missing.append("H")
-        if not room_type: missing.append("тип")
-        if not content: missing.append("контент")
-        if not obstacles: missing.append("препятствия")
-        if not mount: missing.append("монтаж")
+    missing = []
+    if not S:
+        missing.append("S")
+    if not H:
+        missing.append("H")
+    if not room_type:
+        missing.append("тип")
+    if not content:
+        missing.append("контент")
+    if not obstacles:
+        missing.append("препятствия")
+    if missing:
         raise ValueError("Не хватает параметров: " + ", ".join(missing))
 
     return {
         "S": float(S),
         "H": float(H),
-        "room_type": room_type,
+        "room_type": room_type.strip(),
         "noise": float(noise) if noise is not None else None,
-        "content": content,
-        "obstacles": obstacles,
-        "mount": mount,
-        "floor": floor
+        "content": content.strip(),
+        "obstacles": obstacles.strip(),
+        "mount": (mount or "").strip().lower(),  # may be ""
     }
+
 
 def default_noise_by_type(room_type: str) -> float:
     rt = room_type.lower()
@@ -216,9 +263,23 @@ def default_noise_by_type(room_type: str) -> float:
     if "улиц" in rt:
         return 70.0
     if "цех" in rt:
-        # если цех без уточнений — берём умеренный
         return 75.0
     return 60.0
+
+
+def allowed_speaker_types(room_type: str) -> Set[str]:
+    rt = room_type.lower()
+    if "офис" in rt or "переговор" in rt:
+        return {"потолочный", "настенный"}
+    if "корид" in rt or "холл" in rt:
+        return {"потолочный", "настенный"}
+    if "склад" in rt:
+        return {"настенный", "колонный", "рупорный"}
+    if "цех" in rt:
+        return {"колонный", "рупорный"}
+    if "улиц" in rt:
+        return {"уличный", "рупорный", "проекторный"}
+    return {"потолочный", "настенный", "колонный", "рупорный"}
 
 
 def rmax_effective(room_type: str, rmax: float) -> float:
@@ -226,12 +287,11 @@ def rmax_effective(room_type: str, rmax: float) -> float:
     if "офис" in rt or "переговор" in rt:
         return min(rmax, 6.0)
     if "склад" in rt:
-        # в ТЗ 8–10 м: возьмём 9 как середину
-        return min(rmax, 9.0)
+        return min(rmax, 9.0)  # 8–10m midpoint
     if "цех" in rt:
-        # 6–8 м: возьмём 7
-        return min(rmax, 7.0)
+        return min(rmax, 7.0)  # 6–8m midpoint
     return rmax
+
 
 def calc_for_model(S: float, L_target: float, room_type: str, maxSPL_1m: float) -> Dict[str, Any]:
     # Rmax = 10 ^ ((maxSPL_1m - L_target) / 20)
@@ -243,26 +303,27 @@ def calc_for_model(S: float, L_target: float, room_type: str, maxSPL_1m: float) 
     N = math.ceil(S / s_one) if s_one > 0 else 0
 
     return {
-        "Rmax": rmax,
         "Rmax_effective": r_eff,
-        "S_one": s_one,
         "N": N,
-        "step": round(r_eff * 1.0, 2)  # условный шаг = Rmax_effective (можно уточнять)
+        "step": round(r_eff, 2),
     }
 
 
+# ---------------------------
+# Catalog extraction (Vector Store) - stable JSON schema
+# ---------------------------
 CATALOG_EXTRACT_SYSTEM = """
-Ты извлекаешь каталог IP-громкоговорителей из внутренних документов.
+Ты извлекаешь КАТАЛОГ IP-громкоговорителей из внутренних документов.
+
+ВАЖНО:
 - Если найден файл catalog_speakers (pdf/docx), используй его как ОСНОВНОЙ источник каталога.
-- Не пытайся собирать каталог из всех паспортов, если catalog_speakers найден.
-
-
+- Паспортами дополняй только если в catalog_speakers нет строки по модели.
 
 Нужно вернуть СТРОГО JSON без текста вокруг:
 {
   "items": [
     {
-      "model": "...",
+      "model": "строка",
       "type": "потолочный|настенный|колонный|рупорный|уличный|проекторный",
       "maxSPL_1m": 120,
       "P_poe": 7.5,
@@ -274,19 +335,18 @@ CATALOG_EXTRACT_SYSTEM = """
 
 Правила:
 - maxSPL_1m распознавай по синонимам: "Максимальный уровень громкости", "Max SPL", "Maximum SPL" и т.п.
-- Если maxSPL_1m нет — НЕ добавляй модель в items.
-- DC-питание игнорируй; poe_standard извлекай если есть.
-- P_poe если нет — оставь null.
-- price если нет — оставь null.
-- Собирай из нескольких файлов, если нужно.
+- Если maxSPL_1m не найден — НЕ добавляй модель в items.
+- DC-питание игнорируй; poe_standard извлекай если есть (если нет — "unknown").
+- P_poe если нет — ставь null.
+- price если нет — ставь null.
 """
+
 
 def get_catalog_from_vector_store() -> Dict[str, Any]:
     """
     Returns: {"items": [ {model,type,maxSPL_1m,P_poe,poe_standard,price}, ... ]}
     Guaranteed JSON via Structured Outputs (json_schema).
     """
-
     schema = {
         "type": "object",
         "properties": {
@@ -303,12 +363,12 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
                         "price": {"type": ["number", "null"]},
                     },
                     "required": ["model", "type", "maxSPL_1m", "P_poe", "poe_standard", "price"],
-                    "additionalProperties": False
-                }
+                    "additionalProperties": False,
+                },
             }
         },
         "required": ["items"],
-        "additionalProperties": False
+        "additionalProperties": False,
     }
 
     try:
@@ -321,36 +381,30 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
             tools=[{
                 "type": "file_search",
                 "vector_store_ids": [VECTOR_STORE_ID],
-                "max_num_results": 50
+                "max_num_results": 50,
             }],
             text={
                 "format": {
                     "type": "json_schema",
                     "name": "speaker_catalog",
                     "strict": True,
-                    "schema": schema
+                    "schema": schema,
                 }
-            }
+            },
         )
     except Exception:
         logger.exception("Catalog extraction failed")
         return {"items": []}
 
     text_out = (getattr(resp, "output_text", "") or "").strip()
-    if not text_out:
-        return {"items": []}
-
     data = _safe_json_load(text_out)
     if not data:
         return {"items": []}
 
     items = data.get("items", []) or []
-    return {"items": items}
 
-
-    # Нормализация типов + фильтр по обязательным полям
-    items = data.get("items", []) or []
-    norm_items = []
+    # Normalize / sanitize
+    norm_items: List[Dict[str, Any]] = []
     for it in items:
         try:
             model = (it.get("model") or "").strip()
@@ -369,153 +423,18 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
                 "maxSPL_1m": float(maxspl),
                 "P_poe": float(poe) if poe is not None else None,
                 "poe_standard": poe_std,
-                "price": float(price) if price is not None else None
+                "price": float(price) if price is not None else None,
             })
         except Exception:
             continue
 
     return {"items": norm_items}
 
-    
-async def handle_calculator_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-
-    try:
-        params = parse_room_params(text)
-    except Exception as e:
-        await update.message.reply_text(f"Не понял ввод. {e}\nНапиши /calc_help для примера.")
-        return
-
-    S = params["S"]
-    room_type = params["room_type"]
-    noise = params["noise"] if params["noise"] is not None else default_noise_by_type(room_type)
-
-    # Фиксированное правило +15 дБ
-    L_target = noise + 15.0
-
-    # Получаем каталог моделей из базы знаний
-    catalog = get_catalog_from_vector_store()
-    items = catalog.get("items", [])
-
-    if not items:
-        await update.message.reply_text(
-            "Не смог собрать каталог моделей из базы знаний.\n"
-            "Совет: добавь отдельный файл catalog_speakers (таблица с model/type/maxSPL_1m/P_poe/poe_standard/price) и попробуй снова."
-        )
-        return
-
-    allowed_types = allowed_speaker_types(room_type)
-    mount = params["mount"].lower()
-
-    # Фильтр по применимости типа + монтажу
-    # Маппинг монтаж -> допустимые типы (упрощенно)
-    mount_allowed = {
-        "потолок": {"потолочный"},
-        "стена": {"настенный", "рупорный"},
-        "колонна": {"колонный"},
-        "любой": {"потолочный", "настенный", "колонный", "рупорный", "уличный", "проекторный"},
-    }
-    mount_set = mount_allowed.get(mount, mount_allowed["любой"])
-
-    filtered = []
-    for it in items:
-        t = (it.get("type") or "").lower().strip()
-        if not t:
-            continue
-        if t not in allowed_types:
-            continue
-        if t not in mount_set and mount != "любой":
-            continue
-        maxspl = it.get("maxSPL_1m")
-        if maxspl is None:
-            continue
-        filtered.append(it)
-
-    if not filtered:
-        await update.message.reply_text(
-            f"Нет подходящих моделей под тип помещения='{room_type}' и монтаж='{mount}'.\n"
-            f"Допустимые типы для помещения: {', '.join(sorted(allowed_types))}."
-        )
-        return
-
-    # Группируем по типам и считаем
-    results_by_type: Dict[str, list] = {}
-    for it in filtered:
-        t = it["type"].lower()
-        calc = calc_for_model(S, L_target, room_type, float(it["maxSPL_1m"]))
-        entry = {**it, **calc}
-        results_by_type.setdefault(t, []).append(entry)
-
-    # Для каждого типа показываем 1–3 лучших (по N, затем по цене если есть)
-    lines = []
-    lines.append("🧮 Расчёт IP-громкоговорителей (SPL)\n")
-    lines.append(f"Параметры: S={S} м², тип={room_type}, шум={noise} дБ → L_target={L_target} дБ (+15), монтаж={mount}, этаж={params['floor']}\n")
-
-    for t, entries in results_by_type.items():
-        # сортировка: меньше N — лучше; если цена есть — дешевле лучше
-        def key_fn(e):
-            price = e.get("price")
-            price_val = float(price) if price is not None else 1e18
-            return (e.get("N", 10**9), price_val)
-        entries_sorted = sorted(entries, key=key_fn)
-
-        lines.append(f"### Вариант: {t}")
-        for e in entries_sorted[:3]:
-            poe = e.get("P_poe")
-            poe_str = f"{poe} Вт" if poe is not None else "нет данных"
-            poe_std = e.get("poe_standard") or "unknown"
-            price = e.get("price")
-            price_str = f"{price}" if price is not None else "нет"
-
-            lines.append(
-                f"- Модель: {e.get('model')}\n"
-                f"  maxSPL_1m: {e.get('maxSPL_1m')} дБ\n"
-                f"  Rmax_effective: {round(e.get('Rmax_effective', 0),2)} м\n"
-                f"  Рекоменд. шаг: ~{e.get('step')} м\n"
-                f"  Кол-во: {e.get('N')} шт\n"
-                f"  PoE: {poe_str} / стандарт: {poe_std}\n"
-                f"  Цена: {price_str}\n"
-            )
-
-    # PoE итог (если есть P_poe)
-    total_poe_known = True
-    P_total = 0.0
-    for t, entries in results_by_type.items():
-        best = sorted(entries, key=lambda e: (e.get("N", 10**9), float(e.get("price") or 1e18)))[0]
-        if best.get("P_poe") is None:
-            total_poe_known = False
-            continue
-        P_total += float(best["N"]) * float(best["P_poe"])
-
-    if total_poe_known and P_total > 0:
-        P_required = P_total * 1.2
-        lines.append(f"\n🔌 PoE (оценка по лучшим вариантам каждого типа): P_total={round(P_total,2)} Вт, P_required(×1.2)={round(P_required,2)} Вт")
-    else:
-        lines.append("\n🔌 PoE: у некоторых моделей нет P_poe — расчёт коммутаторов будет оценочным.")
-
-    # Telegram limit
-    out = "\n".join(lines)
-    if len(out) > 3900:
-        out = out[:3900] + "\n\n(сообщение обрезано)"
-    await update.message.reply_text(out)
-
-
-
-
-
-
-def _get_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
-    mode = context.user_data.get("mode", DEFAULT_MODE)
-    return mode if mode in MODE_DESCRIPTIONS else DEFAULT_MODE
-
-def _set_mode(context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
-    if mode in MODE_DESCRIPTIONS:
-        context.user_data["mode"] = mode
 
 # ---------------------------
-# Prompting
+# Q&A (two-pass)
 # ---------------------------
-EXTRACTOR_SYSTEM = f"""
+EXTRACTOR_SYSTEM = """
 Ты внутренний пресейл-инженер/техподдержка для менеджеров.
 
 ТВОЯ ЗАДАЧА: извлечь максимально релевантные ФАКТЫ из внутренних документов через tool file_search,
@@ -527,17 +446,14 @@ EXTRACTOR_SYSTEM = f"""
 - Если фактов недостаточно — верни статус NOT_FOUND или PARTIAL и сформулируй, чего не хватает.
 
 Верни результат СТРОГО в JSON (без текста вокруг) в таком виде:
-{{
+{
   "status": "OK" | "PARTIAL" | "NOT_FOUND",
   "facts": [
-    {{
+    {
       "fact": "краткий факт",
       "why_relevant": "зачем это важно менеджеру",
       "source_hint": "название документа или краткая ссылка на него"
-    }}
-  ],
-  "assumptions": [
-    "только если явно написано в документах (иначе пусто)"
+    }
   ],
   "questions_to_ask": [
     "2-5 уточняющих вопросов, если нужно"
@@ -545,13 +461,14 @@ EXTRACTOR_SYSTEM = f"""
   "sources": [
     "список документов (уникальные названия)"
   ]
-}}
+}
 
 Язык: русский. Термины (SIP, RTP, PoE, ONVIF и т.п.) сохраняй как в документах.
 """
 
+
 def _final_system(mode: str) -> str:
-    base = f"""
+    base = """
 Ты — внутренний пресейл-инженер/техподдержка для менеджеров.
 Используй ТОЛЬКО предоставленные факты (facts). Нельзя добавлять новые знания.
 Если факты пустые или статус NOT_FOUND — верни ровно:
@@ -566,7 +483,7 @@ def _final_system(mode: str) -> str:
 РЕЖИМ: ПРЕСЕЙЛ.
 Структура:
 1) Вывод (1-2 строки)
-2) Как это работает / архитектура (пункты)
+2) Архитектура/как это работает (пункты)
 3) Требования/ограничения (пункты)
 4) Типовая схема (если есть факты)
 5) Что уточнить у клиента (вопросы)
@@ -576,11 +493,10 @@ def _final_system(mode: str) -> str:
         return base + """
 РЕЖИМ: ДЛЯ КЛИЕНТА.
 - Пиши проще, без внутренней кухни.
-- Без лишних деталей, но без потери точности.
 Структура:
 1) Короткий ответ
 2) Условия/ограничения
-3) Какие данные нужны для точного ответа (если нужно)
+3) Что уточнить (если нужно)
 4) Источники
 """
     if mode == "diag":
@@ -589,35 +505,16 @@ def _final_system(mode: str) -> str:
 Структура:
 1) Возможная причина (ТОЛЬКО если есть факт)
 2) Что проверить (шаги)
-3) Логи/параметры/порты (если есть факты)
-4) Когда эскалировать инженеру
+3) Параметры/порты/логи (если есть факты)
+4) Когда эскалировать
 5) Источники
 """
-    # short
     return base + """
 РЕЖИМ: КОРОТКО.
 - 3–7 строк максимум.
-- Только самое важное.
 - Источники в конце.
 """
 
-def _tool_spec() -> list:
-    # В Responses API настройки задаются на верхнем уровне tool-объекта.
-    # Самый совместимый параметр — max_num_results.
-    return [{
-        "type": "file_search",
-        "vector_store_ids": [VECTOR_STORE_ID],
-        "max_num_results": FILE_SEARCH_MAX_RESULTS,
-        # ranking_options иногда не принимается в Responses API/SDK → оставляем выключенным.
-        # "ranking_options": {"ranker": "auto", "score_threshold": FILE_SEARCH_SCORE_THRESHOLD},
-    }]
-
-
-def _safe_json_load(s: str) -> Optional[Dict[str, Any]]:
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
 
 def extract_facts(question: str) -> Dict[str, Any]:
     resp = client.responses.create(
@@ -627,23 +524,20 @@ def extract_facts(question: str) -> Dict[str, Any]:
             {"role": "user", "content": question},
         ],
         tools=_tool_spec(),
-        # If you don't want OpenAI to store responses, you can set store=False (optional).
-        # store=False,
     )
     text = (getattr(resp, "output_text", "") or "").strip()
     data = _safe_json_load(text)
     if not data:
-        # Fallback: treat as not found (keeps safety)
-        return {"status": "NOT_FOUND", "facts": [], "assumptions": [], "questions_to_ask": [], "sources": []}
-    # Normalize
+        return {"status": "NOT_FOUND", "facts": [], "questions_to_ask": [], "sources": []}
+
     data.setdefault("status", "NOT_FOUND")
     data.setdefault("facts", [])
-    data.setdefault("assumptions", [])
     data.setdefault("questions_to_ask", [])
     data.setdefault("sources", [])
     return data
 
-def compose_answer(facts_blob: Dict[str, Any], mode: str) -> str:
+
+def compose_answer(facts_blob: Dict[str, Any], mode: str, original_question: str) -> str:
     status = facts_blob.get("status", "NOT_FOUND")
     facts = facts_blob.get("facts", []) or []
     sources = facts_blob.get("sources", []) or []
@@ -663,16 +557,16 @@ def compose_answer(facts_blob: Dict[str, Any], mode: str) -> str:
         model=MODEL_FINAL,
         input=[
             {"role": "system", "content": _final_system(mode)},
-            {"role": "user", "content": f"Вопрос менеджера: {facts_blob.get('original_question','') or ''}\n\nВот извлечённые факты (JSON):\n{json.dumps(payload, ensure_ascii=False)}"},
+            {"role": "user", "content": f"Вопрос менеджера: {original_question}\n\nФакты (JSON):\n{json.dumps(payload, ensure_ascii=False)}"},
         ],
-        # no tools here — prevents adding new facts
     )
     answer = (getattr(resp, "output_text", "") or "").strip()
     if not answer:
         answer = "Не нашёл в базе знаний. Уточни вводные или эскалируй инженеру.\nИсточники: нет"
     return answer
 
-async def notify_admin_if_not_found(context: ContextTypes.DEFAULT_TYPE, question: str, facts_blob: Dict[str, Any]):
+
+async def notify_admin_if_not_found(context: ContextTypes.DEFAULT_TYPE, question: str, facts_blob: Dict[str, Any]) -> None:
     if ADMIN_CHAT_ID is None:
         return
     try:
@@ -683,65 +577,185 @@ async def notify_admin_if_not_found(context: ContextTypes.DEFAULT_TYPE, question
     except Exception:
         logger.exception("Failed to notify admin")
 
+
+# ---------------------------
+# Calculator output formatting (per your required format)
+# ---------------------------
+def _calc_sort_key(entry: Dict[str, Any]) -> Tuple[int, float]:
+    n = int(entry.get("N", 10**9))
+    price = entry.get("price")
+    price_val = float(price) if price is not None else 1e18
+    return (n, price_val)
+
+
+def _mount_preference_rank(mount: str, speaker_type: str) -> int:
+    """
+    Lower is better.
+    We do NOT hard-filter by mount because user wants multiple variants.
+    We only sort preferred types first.
+    """
+    m = (mount or "").lower()
+    t = (speaker_type or "").lower()
+
+    if not m:
+        return 10
+    if m in ("любой", "any"):
+        return 10
+
+    # common synonyms
+    if m in ("настенный", "настенная", "стена", "wall"):
+        return 0 if t in ("настенный", "рупорный") else 5
+    if m in ("потолок", "потолочный", "ceiling"):
+        return 0 if t == "потолочный" else 5
+    if m in ("колонна", "колонный", "column"):
+        return 0 if t == "колонный" else 5
+
+    return 10
+
+
+async def handle_calculator_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
+
+    try:
+        params = parse_room_params(text)
+    except Exception as e:
+        await update.message.reply_text(f"Не понял ввод. {e}\nНапиши /calc_help для примера.")
+        return
+
+    S = params["S"]
+    room_type = params["room_type"]
+    noise = params["noise"] if params["noise"] is not None else default_noise_by_type(room_type)
+
+    # Fixed +15 dB rule
+    L_target = noise + 15.0
+
+    # Get catalog
+    catalog = get_catalog_from_vector_store()
+    items = catalog.get("items", [])
+
+    if not items:
+        await update.message.reply_text(
+            "Не смог собрать каталог моделей из базы знаний.\n"
+            "Проверь, что в Vector Store загружен файл catalog_speakers.pdf или catalog_speakers.docx и он проиндексирован.\n"
+            "И что в нём есть поля: model, type, maxSPL_1m, P_poe, poe_standard, price."
+        )
+        return
+
+    allowed_types = allowed_speaker_types(room_type)
+
+    # Filter only by room applicability and required fields
+    filtered: List[Dict[str, Any]] = []
+    for it in items:
+        stype = (it.get("type") or "").lower().strip()
+        if not stype or stype not in allowed_types:
+            continue
+        if it.get("maxSPL_1m") is None:
+            continue
+        filtered.append(it)
+
+    if not filtered:
+        await update.message.reply_text(
+            f"Нет подходящих моделей под тип помещения='{room_type}'.\n"
+            f"Допустимые типы для помещения: {', '.join(sorted(allowed_types))}."
+        )
+        return
+
+    # Calculate per model, group by type
+    results_by_type: Dict[str, List[Dict[str, Any]]] = {}
+    for it in filtered:
+        stype = (it.get("type") or "").lower().strip()
+        calc = calc_for_model(S, L_target, room_type, float(it["maxSPL_1m"]))
+        entry = {**it, **calc}
+        results_by_type.setdefault(stype, []).append(entry)
+
+    # Choose best models per type (1-3) and sort types by mount preference
+    mount = params.get("mount", "")
+
+    type_order = sorted(
+        results_by_type.keys(),
+        key=lambda t: (_mount_preference_rank(mount, t), t)
+    )
+
+    lines: List[str] = []
+    lines.append("🧮 Calculator — подбор IP-громкоговорителей (SPL)\n")
+    lines.append(f"Вводные: S={S} м², H={params['H']} м, тип={room_type}, шум={noise} дБ → L_target={L_target} дБ (+15)")
+    if mount:
+        lines.append(f"Монтаж (предпочтение): {mount}")
+    lines.append("")
+
+    for stype in type_order:
+        entries = results_by_type.get(stype, [])
+        if not entries:
+            continue
+        entries_sorted = sorted(entries, key=_calc_sort_key)
+
+        lines.append(f"Тип громкоговорителя: {stype}")
+
+        # Show up to 3 model options within the type
+        for e in entries_sorted[:3]:
+            model = e.get("model")
+            maxspl = e.get("maxSPL_1m")
+            n = int(e.get("N", 0))
+            step = e.get("step")
+            poe_1 = e.get("P_poe")
+
+            if poe_1 is None:
+                poe_str = "нет данных"
+            else:
+                poe_total = float(poe_1) * n
+                poe_str = f"{poe_1} Вт / {round(poe_total, 2)} Вт"
+
+            lines.append(f"- Модель: {model}")
+            lines.append(f"  maxSPL_1m: {maxspl} дБ")
+            lines.append(f"  Количество громкоговорителей: {n} шт")
+            lines.append(f"  Рекомендованный шаг установки: ~{step} м")
+            lines.append(f"  PoE-потребление (1 шт / всего): {poe_str}")
+        lines.append("")
+
+    out = "\n".join(lines).strip()
+    if len(out) > 3900:
+        out = out[:3900] + "\n\n(сообщение обрезано)"
+    await update.message.reply_text(out)
+
+
 # ---------------------------
 # Telegram handlers
 # ---------------------------
-
-async def calculator_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
-    _set_calculator(context, True)
-    await update.message.reply_text(
-        "🧮 Calculator включён.\n"
-        "Пришли параметры одним сообщением, например:\n"
-        "S=240\nH=3.2\nтип=офис\nшум=55\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=потолок\nэтаж=1\n\n"
-        "Если шум не укажешь — я подставлю автоматически.\n"
-        "Команды: /calc_help, /calc_stop"
-    )
 
-async def calc_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_allowed(update):
-        await update.message.reply_text("Доступ запрещён.")
-        return
-    await update.message.reply_text(
-        "🧮 Формат ввода:\n"
-        "S=площадь_м2\nH=высота_м\nтип=офис|коридор|склад|цех|улица\nшум=дБ (опционально)\n"
-        "контент=только речь|музыка\nпрепятствия=открытое пространство|перегородки|стеллажи|оборудование\n"
-        "монтаж=потолок|стена|колонна|любой\nэтаж=1\n\n"
-        "Пример:\nS=500\nH=6\nтип=склад\nконтент=только речь\nпрепятствия=стеллажи\nмонтаж=стена\nэтаж=1"
-    )
-
-async def calc_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_allowed(update):
-        await update.message.reply_text("Доступ запрещён.")
-        return
-    _set_calculator(context, False)
-    await update.message.reply_text("Calculator выключён. Можешь задавать обычные вопросы.")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_allowed(update):
-        await update.message.reply_text("Доступ запрещён.")
-        return
     await update.message.reply_text(
         "Привет! Я бот-помощник для менеджеров.\n"
-        "Отвечаю строго по внутренним документам (могу собирать ответ из нескольких файлов).\n\n"
+        "Отвечаю строго по внутренним документам.\n\n"
         "Команды:\n"
         "/mode — показать режим\n"
         "/mode presale|client|diag|short — сменить режим\n"
         "/whoami — узнать твой user_id\n"
+        "/calc — включить калькулятор (можно и просто отправить параметры S/H/тип)\n"
+        "/calc_help — пример ввода\n"
+        "/calc_stop — выключить калькулятор\n"
     )
 
-async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
+
     user = update.effective_user
     chat = update.effective_chat
     uname = f"@{user.username}" if user and user.username else "(нет)"
-    await update.message.reply_text(f"user_id: {user.id}\nusername: {uname}\nchat_id: {chat.id}\nchat_type: {chat.type}")
+    await update.message.reply_text(
+        f"user_id: {user.id}\nusername: {uname}\nchat_id: {chat.id}\nchat_type: {chat.type}"
+    )
 
-async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
@@ -756,23 +770,61 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if new_mode not in MODE_DESCRIPTIONS:
         await update.message.reply_text("Неизвестный режим. Доступно: presale, client, diag, short")
         return
+
     _set_mode(context, new_mode)
     await update.message.reply_text(f"Ок. Режим: {new_mode} — {MODE_DESCRIPTIONS[new_mode]}")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # If Calculator mode enabled, route to calculator logic
-    if _in_calculator(context):
-        await handle_calculator_message(update, context)
+
+async def calculator_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        await update.message.reply_text("Доступ запрещён.")
         return
+    _set_calculator(context, True)
+    await update.message.reply_text(
+        "🧮 Calculator включён.\n"
+        "Пришли параметры одним сообщением, пример:\n"
+        "S=2400\nH=3.5\nтип=склад\nшум=85\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=стена\n\n"
+        "Команды: /calc_help, /calc_stop"
+    )
 
 
+async def calc_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        await update.message.reply_text("Доступ запрещён.")
+        return
+    await update.message.reply_text(
+        "🧮 Формат ввода (этаж не нужен):\n"
+        "S=площадь_м2\nH=высота_м\nтип=офис|коридор|склад|цех|улица\nшум=дБ (опционально)\n"
+        "контент=только речь|музыка\nпрепятствия=открытое пространство|перегородки|стеллажи|оборудование\n"
+        "монтаж=потолок|стена|колонна|любой (опционально, как предпочтение)\n\n"
+        "Пример:\nS=20000\nH=3.5\nтип=склад\nшум=85\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=стена"
+    )
+
+
+async def calc_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        await update.message.reply_text("Доступ запрещён.")
+        return
+    _set_calculator(context, False)
+    await update.message.reply_text("Calculator выключён. Можешь задавать обычные вопросы.")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
 
-    question = update.message.text.strip()
+    text = update.message.text.strip()
+
+    # Auto-detect calculator input (stable even if mode lost after restart)
+    if _looks_like_calc_input(text) or _in_calculator(context):
+        await handle_calculator_message(update, context)
+        return
+
+    # Normal Q&A flow
+    question = text
     if len(question) < 2:
         return
     if len(question) > 4000:
@@ -781,27 +833,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         mode = _get_mode(context)
-
-        # Pass 1: extract facts using file_search
         facts_blob = extract_facts(question)
-        facts_blob["original_question"] = question
-
-        # Optional: notify admin on NOT_FOUND
         await notify_admin_if_not_found(context, question, facts_blob)
-
-        # Pass 2: compose final answer using only extracted facts
-        answer = compose_answer(facts_blob, mode)
+        answer = compose_answer(facts_blob, mode, question)
 
         if len(answer) > 3900:
             answer = answer[:3900] + "\n\n(сообщение обрезано)"
 
         await update.message.reply_text(answer)
-
     except Exception as e:
         logger.exception("Error while handling message")
         await update.message.reply_text(f"Ошибка при обработке запроса: {e}")
 
-def main():
+
+# ---------------------------
+# Main
+# ---------------------------
+def main() -> None:
     err = _ensure_config()
     if err:
         raise RuntimeError(err)
@@ -818,11 +866,12 @@ def main():
     app.add_handler(CommandHandler("calc_help", calc_help_cmd))
     app.add_handler(CommandHandler("calc_stop", calc_stop_cmd))
 
+    # Messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting (polling)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
+
 if __name__ == "__main__":
     main()
-
