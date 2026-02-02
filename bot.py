@@ -691,54 +691,22 @@ def main():
         raise RuntimeError(err)
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-  app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("whoami", whoami))
-app.add_handler(CommandHandler("mode", mode_cmd))
 
-# Calculator commands
-app.add_handler(CommandHandler("calculator", calculator_cmd))
-app.add_handler(CommandHandler("calc", calculator_cmd))
-app.add_handler(CommandHandler("calc_help", calc_help_cmd))
-app.add_handler(CommandHandler("calc_stop", calc_stop_cmd))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("mode", mode_cmd))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Calculator commands
+    app.add_handler(CommandHandler("calculator", calculator_cmd))
+    app.add_handler(CommandHandler("calc", calculator_cmd))
+    app.add_handler(CommandHandler("calc_help", calc_help_cmd))
+    app.add_handler(CommandHandler("calc_stop", calc_stop_cmd))
 
-async def calculator_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_allowed(update):
-        await update.message.reply_text("Доступ запрещён.")
-        return
-    _set_calculator(context, True)
-    await update.message.reply_text(
-        "🧮 Calculator включён.\n"
-        "Пришли параметры одним сообщением, например:\n"
-        "S=240\nH=3.2\nтип=офис\nшум=55\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=потолок\nэтаж=1\n\n"
-        "Если шум не укажешь — я подставлю автоматически.\n"
-        "Команды: /calc_help, /calc_stop"
-    )
-
-async def calc_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_allowed(update):
-        await update.message.reply_text("Доступ запрещён.")
-        return
-    await update.message.reply_text(
-        "🧮 Формат ввода (любые строки, можно вразнобой):\n"
-        "S=площадь_м2\nH=высота_м\nтип=офис|коридор|склад|цех|улица\nшум=дБ (опционально)\n"
-        "контент=только речь|музыка\nпрепятствия=открытое пространство|перегородки|стеллажи|оборудование\n"
-        "монтаж=потолок|стена|колонна|любой\nэтаж=1 (или зона)\n\n"
-        "Пример:\nS=500\nH=6\nтип=склад\nконтент=только речь\nпрепятствия=стеллажи\nмонтаж=стена\nэтаж=1"
-    )
-
-async def calc_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_allowed(update):
-        await update.message.reply_text("Доступ запрещён.")
-        return
-    _set_calculator(context, False)
-    await update.message.reply_text("Calculator выключён. Можешь задавать обычные вопросы.")
-
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting (polling)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
