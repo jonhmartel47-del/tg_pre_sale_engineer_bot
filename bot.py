@@ -254,7 +254,8 @@ def calc_for_model(S: float, L_target: float, room_type: str, maxSPL_1m: float) 
 CATALOG_EXTRACT_SYSTEM = """
 Ты извлекаешь каталог IP-громкоговорителей из внутренних документов.
 - Если найден файл catalog_speakers (pdf/docx), используй его как ОСНОВНОЙ источник каталога.
-- Паспортами дополняй только если в catalog_speakers нет строки по модели.
+- Не пытайся собирать каталог из всех паспортов, если catalog_speakers найден.
+
 
 
 Нужно вернуть СТРОГО JSON без текста вокруг:
@@ -281,8 +282,6 @@ CATALOG_EXTRACT_SYSTEM = """
 """
 
 def get_catalog_from_vector_store() -> Dict[str, Any]:
-    # Просим собрать каталог из базы знаний.
-    # Для больших баз лучше отдельный catalog-файл, но и из паспортов тоже сможет вытащить.
     resp = client.responses.create(
         model=MODEL_EXTRACT,
         input=[
@@ -295,7 +294,9 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
             "max_num_results": 50
         }],
     )
+
     text = (getattr(resp, "output_text", "") or "").strip()
+    logger.info("CATALOG_RAW_OUTPUT=%s", text[:2000])  # <-- добавь это
     data = _safe_json_load(text)
     if not data or "items" not in data:
         return {"items": []}
