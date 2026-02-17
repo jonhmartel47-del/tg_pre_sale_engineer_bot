@@ -372,26 +372,27 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
     }
 
     try:
-        resp = client.responses.create(
-            model=MODEL_EXTRACT,
-            input=[
-                {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
-                {"role": "user", "content": "Собери каталог моделей и параметры для расчёта."},
-            ],
-            tools=[{
-                "type": "file_search",
-                "vector_store_ids": [VECTOR_STORE_ID],
-                "max_num_results": 50,
-            }],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "speaker_catalog",
-                    "strict": True,
-                    "schema": schema,
-                }
-            },
-        )
+resp = client.responses.create(
+    model=MODEL_EXTRACT,
+    tool_choice="required",
+    input=[
+        {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
+        {"role": "user", "content": "Найди catalog_speakers.json и верни полный каталог items."},
+    ],
+    tools=[{
+        "type": "file_search",
+        "vector_store_ids": [VECTOR_STORE_ID],
+        "max_num_results": 50,
+    }],
+    text={
+        "format": {
+            "type": "json_schema",
+            "name": "speaker_catalog",
+            "strict": True,
+            "schema": schema,
+        }
+    },
+)
     except Exception:
         logger.exception("Catalog extraction failed")
         return {"items": []}
