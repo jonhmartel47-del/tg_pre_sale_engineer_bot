@@ -309,42 +309,7 @@ def calc_for_model(S: float, L_target: float, room_type: str, maxSPL_1m: float) 
     }
 
 
-# ---------------------------
-# Catalog extraction (Vector Store) - stable JSON schema
-# ---------------------------
-CATALOG_EXTRACT_SYSTEM = """
-Ты извлекаешь КАТАЛОГ IP-громкоговорителей из внутренних документов.
-
-ВАЖНО:
-- Если найден файл catalog_speakers.json, используй его как ОСНОВНОЙ источник каталога.
-- Паспортами дополняй только если в catalog_speakers.json нет строки по модели.
-
-Нужно вернуть СТРОГО JSON без текста вокруг:
-{
-  "items": [
-    {
-      "model": "строка",
-      "type": "потолочный|настенный|колонный|рупорный|уличный|проекторный",
-      "maxSPL_1m": 120,
-      "P_poe": 7.5,
-      "poe_standard": "802.3af|802.3at|802.3bt|unknown",
-      "price": 0
-    }
-  ]
-}
-
-Правила:
-- maxSPL_1m распознавай по синонимам: "Максимальный уровень громкости", "Max SPL", "Maximum SPL" и т.п.
-- Если maxSPL_1m не найден — НЕ добавляй модель в items.
-- DC-питание игнорируй; poe_standard извлекай если есть (если нет — "unknown").
-- P_poe если нет — ставь null.
-- price если нет — ставь null.
-"""
-
-
 def get_catalog_from_vector_store() -> Dict[str, Any]:
-
-    import json
 
     print("Loading catalog from local file...")
 
@@ -591,8 +556,8 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
         print("ERROR: catalog empty")
         await update.message.reply_text(
             "Не смог собрать каталог моделей из базы знаний.\n"
-            "Проверь, что в Vector Store загружен файл catalog_speakers.json и он проиндексирован.\n"
-            "И что в нём есть поля: model, type, maxSPL_1m, P_poe, poe_standard, price."
+            "Проверь, что в git загружен файл catalog_speakers.json.\n"
+            "И что в нём есть поля: model, type, maxSPL_1m, P_poe, poe_standard."
         )
         return
 
