@@ -316,7 +316,7 @@ CATALOG_EXTRACT_SYSTEM = """
 Ты извлекаешь КАТАЛОГ IP-громкоговорителей из внутренних документов.
 
 ВАЖНО:
-- Если найден файл catalog_speakers (pdf/docx), используй его как ОСНОВНОЙ источник каталога.
+- Если найден файл catalog_speakers (json), используй его как ОСНОВНОЙ источник каталога.
 - Паспортами дополняй только если в catalog_speakers нет строки по модели.
 
 Нужно вернуть СТРОГО JSON без текста вокруг:
@@ -639,7 +639,7 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
     if not items:
         await update.message.reply_text(
             "Не смог собрать каталог моделей из базы знаний.\n"
-            "Проверь, что в Vector Store загружен файл catalog_speakers.pdf или catalog_speakers.docx и он проиндексирован.\n"
+            "Проверь, что в Vector Store загружен файл catalog_speakers.json и он проиндексирован.\n"
             "И что в нём есть поля: model, type, maxSPL_1m, P_poe, poe_standard, price."
         )
         return
