@@ -343,10 +343,10 @@ CATALOG_EXTRACT_SYSTEM = """
 
 
 def get_catalog_from_vector_store() -> Dict[str, Any]:
-    """
-    Returns: {"items": [ {model,type,maxSPL_1m,P_poe,poe_standard,price}, ... ]}
-    Guaranteed JSON via Structured Outputs (json_schema).
-    """
+    print("\n========== GET CATALOG START ==========")
+    print("VECTOR_STORE_ID:", VECTOR_STORE_ID)
+    print("MODEL_EXTRACT:", MODEL_EXTRACT)
+
     schema = {
         "type": "object",
         "properties": {
@@ -371,7 +371,11 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
         "additionalProperties": False,
     }
 
+    print("Schema prepared")
+
     try:
+        print("Calling OpenAI responses.create...")
+
         resp = client.responses.create(
             model=MODEL_EXTRACT,
             tool_choice="required",
@@ -393,20 +397,63 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
                 }
             },
         )
-    except Exception:
+
+        print("OpenAI response received")
+
+    except Exception as e:
+        print("ERROR during OpenAI call:", e)
         logger.exception("Catalog extraction failed")
         return {"items": []}
 
+    # RAW RESPONSE DEBUG
+    print("\n--- RAW RESPONSE OBJECT ---")
+    print(resp)
+
+    print("\n--- RESPONSE OUTPUT ---")
+    try:
+        print(resp.output)
+    except Exception as e:
+        print("Cannot print resp.output:", e)
+
+    print("\n--- RESPONSE OUTPUT_TEXT ---")
+    try:
+        print(resp.output_text)
+    except Exception as e:
+        print("Cannot print resp.output_text:", e)
+
     text_out = (getattr(resp, "output_text", "") or "").strip()
+
+    print("\nParsed output_text:")
+    print(text_out)
+
+    if not text_out:
+        print("ERROR: output_text is empty")
+        return {"items": []}
+
     data = _safe_json_load(text_out)
+
+    print("\nParsed JSON data:")
+    print(data)
+
     if not data:
+        print("ERROR: JSON parsing failed")
         return {"items": []}
 
     items = data.get("items", []) or []
 
+    print("\nItems extracted:", len(items))
+
+    if items:
+        print("First item:", items[0])
+    else:
+        print("ERROR: items list is empty")
+
     # Normalize / sanitize
     norm_items: List[Dict[str, Any]] = []
-    for it in items:
+
+    for i, it in enumerate(items):
+        print(f"\nProcessing item {i}: {it}")
+
         try:
             model = (it.get("model") or "").strip()
             stype = (it.get("type") or "").strip().lower()
@@ -415,19 +462,36 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
             poe_std = (it.get("poe_standard") or "unknown").strip()
             price = it.get("price", None)
 
+            print(" model:", model)
+            print(" type:", stype)
+            print(" maxSPL:", maxspl)
+            print(" P_poe:", poe)
+            print(" poe_standard:", poe_std)
+            print(" price:", price)
+
             if not model or not stype or maxspl is None:
+                print(" Skipped: missing required fields")
                 continue
 
-            norm_items.append({
+            normalized = {
                 "model": model,
                 "type": stype,
                 "maxSPL_1m": float(maxspl),
                 "P_poe": float(poe) if poe is not None else None,
                 "poe_standard": poe_std,
                 "price": float(price) if price is not None else None,
-            })
-        except Exception:
-            continue
+            }
+
+            norm_items.append(normalized)
+
+            print(" Accepted and normalized")
+
+        except Exception as e:
+            print(" ERROR normalizing item:", e)
+
+    print("\nFinal normalized items count:", len(norm_items))
+
+    print("========== GET CATALOG END ==========\n")
 
     return {"items": norm_items}
 
