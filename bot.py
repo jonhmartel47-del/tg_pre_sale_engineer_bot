@@ -36,10 +36,10 @@ from openai import OpenAI
 # Logging (force stderr so Railway shows it reliably)
 # ---------------------------
 logging.basicConfig(
-                    level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-                    stream=sys.stderr,
-                    )
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 logger = logging.getLogger("tg-pre-sale-engineer-bot")
 
 
@@ -112,10 +112,10 @@ def _is_allowed(update: Update) -> bool:
     # If no whitelist configured -> allow all (pilot)
     if not (ALLOWED_USER_IDS or ALLOWED_CHAT_IDS):
         return True
-    
+
     chat_id = update.effective_chat.id if update.effective_chat else None
     user_id = update.effective_user.id if update.effective_user else None
-    
+
     if chat_id is not None and chat_id in ALLOWED_CHAT_IDS:
         return True
     if user_id is not None and user_id in ALLOWED_USER_IDS:
@@ -133,10 +133,10 @@ def _safe_json_load(s: str) -> Optional[Dict[str, Any]]:
 def _tool_spec() -> list:
     # Responses API: file_search tool with max_num_results at top-level.
     return [{
-            "type": "file_search",
-            "vector_store_ids": [VECTOR_STORE_ID],
-            "max_num_results": FILE_SEARCH_MAX_RESULTS,
-            }]
+        "type": "file_search",
+        "vector_store_ids": [VECTOR_STORE_ID],
+        "max_num_results": FILE_SEARCH_MAX_RESULTS,
+    }]
 
 
 # ---------------------------
@@ -198,18 +198,18 @@ def parse_room_params(text: str) -> Dict[str, Any]:
     (этаж=... is ignored if present)
     """
     t = text.strip()
-    
+
     def grab_num(key: str) -> Optional[float]:
         # allow "шум=" empty -> None
         m_empty = re.search(rf"(?im)^{re.escape(key)}\s*=\s*$", t)
         if m_empty:
             return None
-        
+
         m = re.search(rf"(?im)^{re.escape(key)}\s*=\s*([0-9]+(?:[.,][0-9]+)?)\s*$", t)
         if not m:
             return None
         return float(m.group(1).replace(",", "."))
-    
+
     def grab_str(*keys: str) -> Optional[str]:
         for key in keys:
             m = re.search(rf"(?im)^{re.escape(key)}\s*=\s*(.+?)\s*$", t)
@@ -218,7 +218,7 @@ def parse_room_params(text: str) -> Dict[str, Any]:
                 if val:
                     return val
         return None
-    
+
     S = grab_num("S")
     H = grab_num("H")
     room_type = grab_str("тип", "тип_помещения")
@@ -226,7 +226,7 @@ def parse_room_params(text: str) -> Dict[str, Any]:
     content = grab_str("контент")
     obstacles = grab_str("препятствия")
     mount = grab_str("монтаж", "разрешённый_монтаж")  # optional
-    
+
     missing = []
     if not S:
         missing.append("S")
@@ -240,7 +240,7 @@ def parse_room_params(text: str) -> Dict[str, Any]:
         missing.append("препятствия")
     if missing:
         raise ValueError("Не хватает параметров: " + ", ".join(missing))
-    
+
     return {
         "S": float(S),
         "H": float(H),
@@ -249,7 +249,7 @@ def parse_room_params(text: str) -> Dict[str, Any]:
         "content": content.strip(),
         "obstacles": obstacles.strip(),
         "mount": (mount or "").strip().lower(),  # may be ""
-}
+    }
 
 
 def default_noise_by_type(room_type: str) -> float:
@@ -297,16 +297,16 @@ def calc_for_model(S: float, L_target: float, room_type: str, maxSPL_1m: float) 
     # Rmax = 10 ^ ((maxSPL_1m - L_target) / 20)
     rmax = 10 ** ((maxSPL_1m - L_target) / 20.0)
     r_eff = rmax_effective(room_type, rmax)
-    
+
     k_overlap = 0.55
     s_one = math.pi * (r_eff ** 2) * k_overlap
     N = math.ceil(S / s_one) if s_one > 0 else 0
-    
+
     return {
         "Rmax_effective": r_eff,
         "N": N,
         "step": round(r_eff, 2),
-}
+    }
 
 
 # ---------------------------
@@ -365,71 +365,70 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
                     "required": ["model", "type", "maxSPL_1m", "P_poe", "poe_standard", "price"],
                     "additionalProperties": False,
                 },
-        }
+            }
         },
         "required": ["items"],
         "additionalProperties": False,
     }
-    
-    try:
-resp = client.responses.create(
-                               model=MODEL_EXTRACT,
-                               tool_choice="required",
-                               input=[
-                                      {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
-                                      {"role": "user", "content": "Найди catalog_speakers.json и верни полный каталог items."},
-                                      ],
-                               tools=[{
-                                      "type": "file_search",
-                                      "vector_store_ids": [VECTOR_STORE_ID],
-                                      "max_num_results": 50,
-                                      }],
-                               text={
-                               "format": {
-                               "type": "json_schema",
-                               "name": "speaker_catalog",
-                               "strict": True,
-                               "schema": schema,
-                               }
-                               },
-                               )
-                                   except Exception:
-                                   logger.exception("Catalog extraction failed")
-                                   return {"items": []}
-                                   
-                                   text_out = (getattr(resp, "output_text", "") or "").strip()
-                                   data = _safe_json_load(text_out)
-                                   if not data:
-                                   return {"items": []}
-                                   
-                                   items = data.get("items", []) or []
-                                   
-                                   # Normalize / sanitize
-                                   norm_items: List[Dict[str, Any]] = []
-                                   for it in items:
-                                   try:
-                                   model = (it.get("model") or "").strip()
-                                   stype = (it.get("type") or "").strip().lower()
-                                   maxspl = it.get("maxSPL_1m", None)
-                                   poe = it.get("P_poe", None)
-                                   poe_std = (it.get("poe_standard") or "unknown").strip()
-                                   price = it.get("price", None)
-                                   
-                                   if not model or not stype or maxspl is None:
-                                   continue
-                                   
-                                   norm_items.append({
-                                                     "model": model,
-                                                     "type": stype,
-                                                     "maxSPL_1m": float(maxspl),
-                                                     "P_poe": float(poe) if poe is not None else None,
-                                                     "poe_standard": poe_std,
-                                                     "price": float(price) if price is not None else None,
-                                                     })
-                                                     except Exception:
-                                                     continue
 
-return {"items": norm_items}
+    try:
+        resp = client.responses.create(
+            model=MODEL_EXTRACT,
+            input=[
+                {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
+                {"role": "user", "content": "Собери каталог моделей и параметры для расчёта."},
+            ],
+            tools=[{
+                "type": "file_search",
+                "vector_store_ids": [VECTOR_STORE_ID],
+                "max_num_results": 50,
+            }],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "speaker_catalog",
+                    "strict": True,
+                    "schema": schema,
+                }
+            },
+        )
+    except Exception:
+        logger.exception("Catalog extraction failed")
+        return {"items": []}
+
+    text_out = (getattr(resp, "output_text", "") or "").strip()
+    data = _safe_json_load(text_out)
+    if not data:
+        return {"items": []}
+
+    items = data.get("items", []) or []
+
+    # Normalize / sanitize
+    norm_items: List[Dict[str, Any]] = []
+    for it in items:
+        try:
+            model = (it.get("model") or "").strip()
+            stype = (it.get("type") or "").strip().lower()
+            maxspl = it.get("maxSPL_1m", None)
+            poe = it.get("P_poe", None)
+            poe_std = (it.get("poe_standard") or "unknown").strip()
+            price = it.get("price", None)
+
+            if not model or not stype or maxspl is None:
+                continue
+
+            norm_items.append({
+                "model": model,
+                "type": stype,
+                "maxSPL_1m": float(maxspl),
+                "P_poe": float(poe) if poe is not None else None,
+                "poe_standard": poe_std,
+                "price": float(price) if price is not None else None,
+            })
+        except Exception:
+            continue
+
+    return {"items": norm_items}
 
 
 # ---------------------------
@@ -519,18 +518,18 @@ def _final_system(mode: str) -> str:
 
 def extract_facts(question: str) -> Dict[str, Any]:
     resp = client.responses.create(
-                                   model=MODEL_EXTRACT,
-                                   input=[
-                                          {"role": "system", "content": EXTRACTOR_SYSTEM},
-                                          {"role": "user", "content": question},
-                                          ],
-                                   tools=_tool_spec(),
-                                   )
-                                   text = (getattr(resp, "output_text", "") or "").strip()
-                                   data = _safe_json_load(text)
-                                   if not data:
-    return {"status": "NOT_FOUND", "facts": [], "questions_to_ask": [], "sources": []}
-    
+        model=MODEL_EXTRACT,
+        input=[
+            {"role": "system", "content": EXTRACTOR_SYSTEM},
+            {"role": "user", "content": question},
+        ],
+        tools=_tool_spec(),
+    )
+    text = (getattr(resp, "output_text", "") or "").strip()
+    data = _safe_json_load(text)
+    if not data:
+        return {"status": "NOT_FOUND", "facts": [], "questions_to_ask": [], "sources": []}
+
     data.setdefault("status", "NOT_FOUND")
     data.setdefault("facts", [])
     data.setdefault("questions_to_ask", [])
@@ -543,28 +542,28 @@ def compose_answer(facts_blob: Dict[str, Any], mode: str, original_question: str
     facts = facts_blob.get("facts", []) or []
     sources = facts_blob.get("sources", []) or []
     questions = facts_blob.get("questions_to_ask", []) or []
-    
+
     if status == "NOT_FOUND" or not facts:
         return "Не нашёл в базе знаний. Уточни вводные или эскалируй инженеру.\nИсточники: нет"
-    
+
     payload = {
         "status": status,
         "facts": facts,
         "questions_to_ask": questions,
         "sources": sources,
     }
-    
+
     resp = client.responses.create(
-                                   model=MODEL_FINAL,
-                                   input=[
-                                          {"role": "system", "content": _final_system(mode)},
-                                          {"role": "user", "content": f"Вопрос менеджера: {original_question}\n\nФакты (JSON):\n{json.dumps(payload, ensure_ascii=False)}"},
-                                          ],
-                                   )
-                                   answer = (getattr(resp, "output_text", "") or "").strip()
-                                   if not answer:
-                                       answer = "Не нашёл в базе знаний. Уточни вводные или эскалируй инженеру.\nИсточники: нет"
-                                   return answer
+        model=MODEL_FINAL,
+        input=[
+            {"role": "system", "content": _final_system(mode)},
+            {"role": "user", "content": f"Вопрос менеджера: {original_question}\n\nФакты (JSON):\n{json.dumps(payload, ensure_ascii=False)}"},
+        ],
+    )
+    answer = (getattr(resp, "output_text", "") or "").strip()
+    if not answer:
+        answer = "Не нашёл в базе знаний. Уточни вводные или эскалируй инженеру.\nИсточники: нет"
+    return answer
 
 
 async def notify_admin_if_not_found(context: ContextTypes.DEFAULT_TYPE, question: str, facts_blob: Dict[str, Any]) -> None:
@@ -597,12 +596,12 @@ def _mount_preference_rank(mount: str, speaker_type: str) -> int:
     """
     m = (mount or "").lower()
     t = (speaker_type or "").lower()
-    
+
     if not m:
         return 10
     if m in ("любой", "any"):
         return 10
-    
+
     # common synonyms
     if m in ("настенный", "настенная", "стена", "wall"):
         return 0 if t in ("настенный", "рупорный") else 5
@@ -610,20 +609,20 @@ def _mount_preference_rank(mount: str, speaker_type: str) -> int:
         return 0 if t == "потолочный" else 5
     if m in ("колонна", "колонный", "column"):
         return 0 if t == "колонный" else 5
-    
+
     return 10
 
 
 async def handle_calculator_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("\n===== CALC REQUEST START =====")
-    
+
     if not update.message or not update.message.text:
         print("No message or no text")
         return
-    
+
     text = update.message.text.strip()
     print("Incoming text:", text)
-    
+
     try:
         params = parse_room_params(text)
         print("Parsed params:", params)
@@ -631,92 +630,92 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
         print("Parse error:", e)
         await update.message.reply_text(f"Не понял ввод. {e}\nНапиши /calc_help для примера.")
         return
-    
+
     S = params["S"]
     room_type = params["room_type"]
     noise = params["noise"] if params["noise"] is not None else default_noise_by_type(room_type)
-    
+
     print("Room area S:", S)
     print("Room type:", room_type)
     print("Noise level:", noise)
-    
+
     # Fixed +15 dB rule
     L_target = noise + 15.0
     print("Target SPL L_target:", L_target)
-    
+
     # Get catalog
     print("Calling get_catalog_from_vector_store()...")
     catalog = get_catalog_from_vector_store()
-    
+
     print("Catalog raw response type:", type(catalog))
     print("Catalog raw response:", catalog)
-    
+
     if catalog is None:
         print("Catalog is None")
-    
+
     items = catalog.get("items", []) if isinstance(catalog, dict) else []
-    
+
     print("Items count:", len(items))
-    
+
     if items:
         print("First item example:", items[0])
     else:
         print("No items found in catalog")
-    
+
     if not items:
         print("ERROR: catalog empty")
         await update.message.reply_text(
-                                        "Не смог собрать каталог моделей из базы знаний.\n"
-                                        "Проверь, что в Vector Store загружен файл catalog_speakers.json и он проиндексирован.\n"
-                                        "И что в нём есть поля: model, type, maxSPL_1m, P_poe, poe_standard, price."
-                                        )
+            "Не смог собрать каталог моделей из базы знаний.\n"
+            "Проверь, что в Vector Store загружен файл catalog_speakers.json и он проиндексирован.\n"
+            "И что в нём есть поля: model, type, maxSPL_1m, P_poe, poe_standard, price."
+        )
         return
-    
+
     allowed_types = allowed_speaker_types(room_type)
     print("Allowed speaker types:", allowed_types)
-    
+
     # Filter only by room applicability and required fields
     filtered: List[Dict[str, Any]] = []
-    
+
     for i, it in enumerate(items):
         print(f"\nChecking item {i}: {it}")
-        
+
         stype = (it.get("type") or "").lower().strip()
         print("Speaker type:", stype)
-        
+
         if not stype:
             print("Rejected: empty type")
             continue
-        
+
         if stype not in allowed_types:
             print("Rejected: type not allowed for this room")
             continue
-        
+
         if it.get("maxSPL_1m") is None:
             print("Rejected: missing maxSPL_1m")
             continue
-        
+
         print("Accepted")
         filtered.append(it)
-    
+
     print("\nFiltered items count:", len(filtered))
-    
+
     if filtered:
         print("First filtered item:", filtered[0])
     else:
         print("No filtered items")
-    
+
     if not filtered:
         print("ERROR: no suitable models after filtering")
         await update.message.reply_text(
-                                        f"Нет подходящих моделей под тип помещения='{room_type}'.\n"
-                                        f"Допустимые типы для помещения: {', '.join(sorted(allowed_types))}."
-                                        )
+            f"Нет подходящих моделей под тип помещения='{room_type}'.\n"
+            f"Допустимые типы для помещения: {', '.join(sorted(allowed_types))}."
+        )
         return
-    
+
     print("SUCCESS: catalog loaded and filtered correctly")
     print("===== CALC REQUEST END =====\n")
-    
+
     # Calculate per model, group by type
     results_by_type: Dict[str, List[Dict[str, Any]]] = {}
     for it in filtered:
@@ -724,30 +723,30 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
         calc = calc_for_model(S, L_target, room_type, float(it["maxSPL_1m"]))
         entry = {**it, **calc}
         results_by_type.setdefault(stype, []).append(entry)
-    
+
     # Choose best models per type (1-3) and sort types by mount preference
     mount = params.get("mount", "")
-    
+
     type_order = sorted(
-                        results_by_type.keys(),
-                        key=lambda t: (_mount_preference_rank(mount, t), t)
-                        )
-                        
-                        lines: List[str] = []
-                        lines.append("🧮 Calculator — подбор IP-громкоговорителей (SPL)\n")
-                        lines.append(f"Вводные: S={S} м², H={params['H']} м, тип={room_type}, шум={noise} дБ → L_target={L_target} дБ (+15)")
-if mount:
-    lines.append(f"Монтаж (предпочтение): {mount}")
+        results_by_type.keys(),
+        key=lambda t: (_mount_preference_rank(mount, t), t)
+    )
+
+    lines: List[str] = []
+    lines.append("🧮 Calculator — подбор IP-громкоговорителей (SPL)\n")
+    lines.append(f"Вводные: S={S} м², H={params['H']} м, тип={room_type}, шум={noise} дБ → L_target={L_target} дБ (+15)")
+    if mount:
+        lines.append(f"Монтаж (предпочтение): {mount}")
     lines.append("")
-    
+
     for stype in type_order:
         entries = results_by_type.get(stype, [])
         if not entries:
             continue
         entries_sorted = sorted(entries, key=_calc_sort_key)
-        
+
         lines.append(f"Тип громкоговорителя: {stype}")
-        
+
         # Show up to 3 model options within the type
         for e in entries_sorted[:3]:
             model = e.get("model")
@@ -755,20 +754,20 @@ if mount:
             n = int(e.get("N", 0))
             step = e.get("step")
             poe_1 = e.get("P_poe")
-            
+
             if poe_1 is None:
                 poe_str = "нет данных"
             else:
                 poe_total = float(poe_1) * n
                 poe_str = f"{poe_1} Вт / {round(poe_total, 2)} Вт"
-            
+
             lines.append(f"- Модель: {model}")
             lines.append(f"  maxSPL_1m: {maxspl} дБ")
             lines.append(f"  Количество громкоговорителей: {n} шт")
             lines.append(f"  Рекомендованный шаг установки: ~{step} м")
             lines.append(f"  PoE-потребление (1 шт / всего): {poe_str}")
         lines.append("")
-    
+
     out = "\n".join(lines).strip()
     if len(out) > 3900:
         out = out[:3900] + "\n\n(сообщение обрезано)"
@@ -782,49 +781,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
-    
+
     await update.message.reply_text(
-                                    "Привет! Я бот-помощник для менеджеров.\n"
-                                    "Отвечаю строго по внутренним документам.\n\n"
-                                    "Команды:\n"
-                                    "/mode — показать режим\n"
-                                    "/mode presale|client|diag|short — сменить режим\n"
-                                    "/whoami — узнать твой user_id\n"
-                                    "/calc — включить калькулятор (можно и просто отправить параметры S/H/тип)\n"
-                                    "/calc_help — пример ввода\n"
-                                    "/calc_stop — выключить калькулятор\n"
-                                    )
+        "Привет! Я бот-помощник для менеджеров.\n"
+        "Отвечаю строго по внутренним документам.\n\n"
+        "Команды:\n"
+        "/mode — показать режим\n"
+        "/mode presale|client|diag|short — сменить режим\n"
+        "/whoami — узнать твой user_id\n"
+        "/calc — включить калькулятор (можно и просто отправить параметры S/H/тип)\n"
+        "/calc_help — пример ввода\n"
+        "/calc_stop — выключить калькулятор\n"
+    )
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
-    
+
     user = update.effective_user
     chat = update.effective_chat
     uname = f"@{user.username}" if user and user.username else "(нет)"
     await update.message.reply_text(
-                                    f"user_id: {user.id}\nusername: {uname}\nchat_id: {chat.id}\nchat_type: {chat.type}"
-                                    )
+        f"user_id: {user.id}\nusername: {uname}\nchat_id: {chat.id}\nchat_type: {chat.type}"
+    )
 
 
 async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
-    
+
     parts = (update.message.text or "").split()
     if len(parts) == 1:
         mode = _get_mode(context)
         await update.message.reply_text(f"Текущий режим: {mode} — {MODE_DESCRIPTIONS[mode]}")
         return
-    
+
     new_mode = parts[1].strip().lower()
     if new_mode not in MODE_DESCRIPTIONS:
         await update.message.reply_text("Неизвестный режим. Доступно: presale, client, diag, short")
         return
-    
+
     _set_mode(context, new_mode)
     await update.message.reply_text(f"Ок. Режим: {new_mode} — {MODE_DESCRIPTIONS[new_mode]}")
 
@@ -835,11 +834,11 @@ async def calculator_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     _set_calculator(context, True)
     await update.message.reply_text(
-                                    "🧮 Calculator включён.\n"
-                                    "Пришли параметры одним сообщением, пример:\n"
-                                    "S=2400\nH=3.5\nтип=склад\nшум=85\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=стена\n\n"
-                                    "Команды: /calc_help, /calc_stop"
-                                    )
+        "🧮 Calculator включён.\n"
+        "Пришли параметры одним сообщением, пример:\n"
+        "S=2400\nH=3.5\nтип=склад\nшум=85\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=стена\n\n"
+        "Команды: /calc_help, /calc_stop"
+    )
 
 
 async def calc_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -847,12 +846,12 @@ async def calc_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Доступ запрещён.")
         return
     await update.message.reply_text(
-                                    "🧮 Формат ввода (этаж не нужен):\n"
-                                    "S=площадь_м2\nH=высота_м\nтип=офис|коридор|склад|цех|улица\nшум=дБ (опционально)\n"
-                                    "контент=только речь|музыка\nпрепятствия=открытое пространство|перегородки|стеллажи|оборудование\n"
-                                    "монтаж=потолок|стена|колонна|любой (опционально, как предпочтение)\n\n"
-                                    "Пример:\nS=20000\nH=3.5\nтип=склад\nшум=85\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=стена"
-                                    )
+        "🧮 Формат ввода (этаж не нужен):\n"
+        "S=площадь_м2\nH=высота_м\nтип=офис|коридор|склад|цех|улица\nшум=дБ (опционально)\n"
+        "контент=только речь|музыка\nпрепятствия=открытое пространство|перегородки|стеллажи|оборудование\n"
+        "монтаж=потолок|стена|колонна|любой (опционально, как предпочтение)\n\n"
+        "Пример:\nS=20000\nH=3.5\nтип=склад\nшум=85\nконтент=только речь\nпрепятствия=перегородки\nмонтаж=стена"
+    )
 
 
 async def calc_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -869,14 +868,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not _is_allowed(update):
         await update.message.reply_text("Доступ запрещён.")
         return
-    
+
     text = update.message.text.strip()
-    
+
     # Auto-detect calculator input (stable even if mode lost after restart)
     if _looks_like_calc_input(text) or _in_calculator(context):
         await handle_calculator_message(update, context)
         return
-    
+
     # Normal Q&A flow
     question = text
     if len(question) < 2:
@@ -884,16 +883,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if len(question) > 4000:
         await update.message.reply_text("Слишком длинный запрос. Сократи до 1–2 абзацев.")
         return
-    
+
     try:
         mode = _get_mode(context)
         facts_blob = extract_facts(question)
         await notify_admin_if_not_found(context, question, facts_blob)
         answer = compose_answer(facts_blob, mode, question)
-        
+
         if len(answer) > 3900:
             answer = answer[:3900] + "\n\n(сообщение обрезано)"
-        
+
         await update.message.reply_text(answer)
     except Exception as e:
         logger.exception("Error while handling message")
@@ -907,22 +906,22 @@ def main() -> None:
     err = _ensure_config()
     if err:
         raise RuntimeError(err)
-    
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("mode", mode_cmd))
-    
+
     # Calculator commands
     app.add_handler(CommandHandler("calculator", calculator_cmd))
     app.add_handler(CommandHandler("calc", calculator_cmd))
     app.add_handler(CommandHandler("calc_help", calc_help_cmd))
     app.add_handler(CommandHandler("calc_stop", calc_stop_cmd))
-    
+
     # Messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+
     logger.info("Bot is starting (polling)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
