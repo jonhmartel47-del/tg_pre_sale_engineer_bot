@@ -352,11 +352,13 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
         data = json.load(f)
 
     print("Loaded items:", len(data.get("items", [])))
+
+    return data
     
     print("\n========== GET CATALOG START ==========")
     print("VECTOR_STORE_ID:", VECTOR_STORE_ID)
     print("MODEL_EXTRACT:", MODEL_EXTRACT)
-
+    
     schema = {
         "type": "object",
         "properties": {
