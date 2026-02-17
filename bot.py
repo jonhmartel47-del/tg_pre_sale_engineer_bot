@@ -376,7 +376,7 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
             model=MODEL_EXTRACT,
             input=[
                 {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
-                {"role": "user", "content": "Собери каталог моделей и параметры для расчёта."},
+                {"role": "user", "content": "Найди catalog_speakers.json и верни полный каталог items."},
             ],
             tools=[{
                 "type": "file_search",
