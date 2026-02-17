@@ -343,6 +343,16 @@ CATALOG_EXTRACT_SYSTEM = """
 
 
 def get_catalog_from_vector_store() -> Dict[str, Any]:
+
+    import json
+
+    print("Loading catalog from local file...")
+
+    with open("catalog_speakers.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    print("Loaded items:", len(data.get("items", [])))
+    
     print("\n========== GET CATALOG START ==========")
     print("VECTOR_STORE_ID:", VECTOR_STORE_ID)
     print("MODEL_EXTRACT:", MODEL_EXTRACT)
