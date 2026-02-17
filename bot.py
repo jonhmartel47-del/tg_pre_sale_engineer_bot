@@ -374,6 +374,7 @@ def get_catalog_from_vector_store() -> Dict[str, Any]:
     try:
         resp = client.responses.create(
             model=MODEL_EXTRACT,
+            tool_choice="required",
             input=[
                 {"role": "system", "content": CATALOG_EXTRACT_SYSTEM},
                 {"role": "user", "content": "Найди catalog_speakers.json и верни полный каталог items."},
