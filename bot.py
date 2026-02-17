@@ -614,14 +614,20 @@ def _mount_preference_rank(mount: str, speaker_type: str) -> int:
 
 
 async def handle_calculator_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print("\n===== CALC REQUEST START =====")
+
     if not update.message or not update.message.text:
+        print("No message or no text")
         return
 
     text = update.message.text.strip()
+    print("Incoming text:", text)
 
     try:
         params = parse_room_params(text)
+        print("Parsed params:", params)
     except Exception as e:
+        print("Parse error:", e)
         await update.message.reply_text(f"Не понял ввод. {e}\nНапиши /calc_help для примера.")
         return
 
@@ -629,14 +635,35 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
     room_type = params["room_type"]
     noise = params["noise"] if params["noise"] is not None else default_noise_by_type(room_type)
 
+    print("Room area S:", S)
+    print("Room type:", room_type)
+    print("Noise level:", noise)
+
     # Fixed +15 dB rule
     L_target = noise + 15.0
+    print("Target SPL L_target:", L_target)
 
     # Get catalog
+    print("Calling get_catalog_from_vector_store()...")
     catalog = get_catalog_from_vector_store()
-    items = catalog.get("items", [])
+
+    print("Catalog raw response type:", type(catalog))
+    print("Catalog raw response:", catalog)
+
+    if catalog is None:
+        print("Catalog is None")
+
+    items = catalog.get("items", []) if isinstance(catalog, dict) else []
+
+    print("Items count:", len(items))
+
+    if items:
+        print("First item example:", items[0])
+    else:
+        print("No items found in catalog")
 
     if not items:
+        print("ERROR: catalog empty")
         await update.message.reply_text(
             "Не смог собрать каталог моделей из базы знаний.\n"
             "Проверь, что в Vector Store загружен файл catalog_speakers.json и он проиндексирован.\n"
@@ -645,23 +672,49 @@ async def handle_calculator_message(update: Update, context: ContextTypes.DEFAUL
         return
 
     allowed_types = allowed_speaker_types(room_type)
+    print("Allowed speaker types:", allowed_types)
 
     # Filter only by room applicability and required fields
     filtered: List[Dict[str, Any]] = []
-    for it in items:
+
+    for i, it in enumerate(items):
+        print(f"\nChecking item {i}: {it}")
+
         stype = (it.get("type") or "").lower().strip()
-        if not stype or stype not in allowed_types:
+        print("Speaker type:", stype)
+
+        if not stype:
+            print("Rejected: empty type")
             continue
+
+        if stype not in allowed_types:
+            print("Rejected: type not allowed for this room")
+            continue
+
         if it.get("maxSPL_1m") is None:
+            print("Rejected: missing maxSPL_1m")
             continue
+
+        print("Accepted")
         filtered.append(it)
 
+    print("\nFiltered items count:", len(filtered))
+
+    if filtered:
+        print("First filtered item:", filtered[0])
+    else:
+        print("No filtered items")
+
     if not filtered:
+        print("ERROR: no suitable models after filtering")
         await update.message.reply_text(
             f"Нет подходящих моделей под тип помещения='{room_type}'.\n"
             f"Допустимые типы для помещения: {', '.join(sorted(allowed_types))}."
         )
         return
+
+    print("SUCCESS: catalog loaded and filtered correctly")
+    print("===== CALC REQUEST END =====\n")
 
     # Calculate per model, group by type
     results_by_type: Dict[str, List[Dict[str, Any]]] = {}
