@@ -1,0 +1,52 @@
+{
+    "items":  [
+        {
+            "model": "SIP-S21T",
+            "type": "рупорный",
+            "maxSPL_1m": 120,
+            "P_poe": 30,
+            "poe_standard": "802.3at",
+            "price": ""
+        },
+        {
+            "model": "SIP-S11",
+            "type": "настенный",
+            "maxSPL_1m": 101,
+            "P_poe": 15,
+            "poe_standard": "802.3af",
+            "price": ""
+        },
+        {
+            "model": "SIP-S01",
+            "type": "потолочный",
+            "maxSPL_1m": 96,
+            "P_poe": 15,
+            "poe_standard": "802.3af",
+            "price": ""
+        },
+        {
+            "model": "SIP-S51",
+            "type": "проекторный",
+            "maxSPL_1m": 102,
+            "P_poe": 15,
+            "poe_standard": "802.3af",
+            "price": ""
+        },
+        {
+            "model": "SIP-S11",
+            "type": "настенный",
+            "maxSPL_1m": 105,
+            "P_poe": 30,
+            "poe_standard": "802.3at",
+            "price": ""
+        },
+        {
+            "model": "SIP-S03T",
+            "type": "потолочный",
+            "maxSPL_1m": 110,
+            "P_poe": 30,
+            "poe_standard": "802.3at",
+            "price": ""
+        }
+    ]
+}
